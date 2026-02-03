@@ -1,14 +1,20 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const puppeteerCore = require('puppeteer-core');
 
+// Use puppeteer-core as the base for puppeteer-extra
 puppeteer.use(StealthPlugin());
 
 async function scrapeVisaSlots(url) {
     let browser;
+    let page;
     try {
+        const isWin = process.platform === 'win32';
+        const defaultPath = isWin ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
+
         browser = await puppeteer.launch({
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || defaultPath,
             headless: 'new',
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -21,13 +27,24 @@ async function scrapeVisaSlots(url) {
             ]
         });
 
-        const page = await browser.newPage();
+        page = await browser.newPage();
+
+        // Block unnecessary resources to speed up loading
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            const resourceType = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
 
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
         // Wait for the calendar or slots table to load
-        // We'll search for text "Available" and "Reserved"
         await page.waitForFunction(() =>
             document.body.innerText.includes('Available') || document.body.innerText.includes('Reserved'),
             { timeout: 30000 }
@@ -36,17 +53,13 @@ async function scrapeVisaSlots(url) {
         const data = await page.evaluate(() => {
             const bodyText = document.body.innerText;
 
-            // Regex to find numbers after "Available" and "Reserved"
-            // Usually looks like "Available: 5" or "Available (5)"
             const availableMatch = bodyText.match(/Available\s*:?\s*(\d+)/i);
             const reservedMatch = bodyText.match(/Reserved\s*:?\s*(\d+)/i);
 
-            // Alternatively, if they are in <b> tags as mentioned in some previous contexts
             const getNumberFromTag = (text) => {
                 const elements = Array.from(document.querySelectorAll('b, span, td, div'));
                 const target = elements.find(el => el.innerText.trim().toLowerCase() === text.toLowerCase());
                 if (target) {
-                    // Check next sibling or parent's child
                     const parent = target.parentElement;
                     const numbers = parent.innerText.match(/\d+/);
                     return numbers ? parseInt(numbers[0]) : 0;
@@ -65,23 +78,37 @@ async function scrapeVisaSlots(url) {
         console.error(`Error scraping ${url}:`, error.message);
         throw error;
     } finally {
-        if (browser) await browser.close();
+        if (page) await page.close().catch(() => { });
+        if (browser) await browser.close().catch(() => { });
     }
 }
 
 async function takeScreenshot(url) {
     let browser;
+    let page;
     try {
+        const isWin = process.platform === 'win32';
+        const defaultPath = isWin ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
+
         browser = await puppeteer.launch({
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || defaultPath,
             headless: 'new',
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
-        const page = await browser.newPage();
+        page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        // Wait a bit for any dynamic content
+        // For screenshots, we might want CSS but can still block images to save time/space
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (req.resourceType() === 'image') {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
         await new Promise(r => setTimeout(r, 2000));
 
         const screenshot = await page.screenshot({ fullPage: true });
@@ -90,7 +117,8 @@ async function takeScreenshot(url) {
         console.error(`Error taking screenshot for ${url}:`, error.message);
         throw error;
     } finally {
-        if (browser) await browser.close();
+        if (page) await page.close().catch(() => { });
+        if (browser) await browser.close().catch(() => { });
     }
 }
 
