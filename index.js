@@ -39,13 +39,22 @@ app.listen(PORT, '0.0.0.0', () => {
     };
 
     async function checkAppointments() {
+        if (!bot.isRunning) return;
+
         console.log(`--- Starting Check: ${new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Algiers' })} ---`);
         for (const monitor of monitors) {
+            // Check if city monitoring is active
+            if (!bot.cityStatus[monitor.city]) {
+                console.log(`Skipping ${monitor.city} as it is disabled.`);
+                continue;
+            }
+
             try {
                 const { available, reserved } = await scrapeVisaSlots(monitor.url);
                 const prev = previousCounts[monitor.city];
+
                 if (available !== prev.available || reserved !== prev.reserved) {
-                    await bot.sendChannelAlert(monitor.city, available, reserved);
+                    await bot.sendAdminAlert(monitor.city, available, reserved);
                     previousCounts[monitor.city] = { available, reserved };
                 }
                 bot.updateLastResults(monitor.city, available, reserved);
